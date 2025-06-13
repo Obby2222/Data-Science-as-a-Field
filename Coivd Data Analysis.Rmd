@@ -1,0 +1,826 @@
+---
+title: "Covid Data Final"
+author: "Will Hubbs"
+date: "2025-06-07"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+  html_document:
+    df_print: paged
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Required Packages
+## This analysis requires the following R packages: tidyverse, lubridate, stringr, rvest, dplyr.
+## Please Install them before running the code using
+
+
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(rvest)
+library(dplyr)
+
+```
+
+## Introduction & Objectives
+
+This project analyzes the COVID-19 data set to develop a regression model that examines if population density affects the Case Fatality Ratio (CFR). 
+
+The process to build this model involves several steps:
+
+  1.  **Data Preparation** - Loading and cleaning the data set to make it ready for analysis
+  2.  **Visualization** - Creating graphs to identify trends and explore the data
+  3.  **Modeling** - Building a regression model to understand the relationship between population density and CFR
+  4.  **Interpretation** - Analyzing the results and draw conclusions from the model
+  5.  **Conclusion** - Summarizing the findings 
+  
+  Throughout the project, data cleaning techniques covered during this course will be applied. 
+
+## Data Source & Description
+
+The primary data set for this project is sourced from the COVID-19 data set from the Johns Hopkins Github. It includes information on the number of cases and deaths at both the state and national level. Additionally, this project incorporates area data obtained from the U.S. Census Bureau to support population density calculations. 
+
+## Key Assumptions
+
+
+  1. **Data Accuracy:** The COVId-19 case and death counts reported by John Hopkins and area data from the U.S. Census are accurate and reliable. 
+  2.  **Consistency Across States:** Reporting methods and definitions of COVID-19 cases and deaths are consistent across all U.S. states and over time.
+  3. **Population Stability:** Population estimates by month and year accurately reflect the actual populations at risk during the study period.
+  4. **Linearity:** The relationship between population density and CFR is approximately linear for the purposes of the regression model.
+  5. **No Major Confounding Factors:** Other factors affecting CFR (e.g. healthcare quality, demographics, public health policies) are either constant or their effects are captured indirectly by year and month variables.
+
+## Potential Sources of Bias
+
+  1. **Reporting Bias:** Differences in how states report COVID-19 cases and deaths can lead to inconsistent or incomplete data.
+  2. **Selection Bias:** The data only includes reported cases and deaths; asymptomatic or unreported cases are not captured, which may affect CFR estimates.
+  3. **Surveillance Bias:** States with more testing and healthcare resources may detect more cases, influencing CFR calculations.
+  4.  **Confounding Bias:** Other variables like age distribution, healthcare quality, and vaccination rates may influence CFR but are not directly included in the model.
+  5. ** Population Density Bias:** Population density may correlate with many other socio-economic factors, which could confound its effect on CFR.
+
+## Data Overview & Initial Exploration
+
+To begin exploring the data, I first load the data sets by constructing the full URLs for the files using string concatenation. Then, I read these CSV files directly from the GitHub repository and assign them to variables for further analysis.
+
+```{r load in the data from GitHub}
+
+## Pulls in the data from GitHub
+
+url_in = paste0("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/",
+                "master/csse_covid_19_data/csse_covid_19_time_series/")
+
+file_names = c("time_series_covid19_confirmed_US.csv",
+               "time_series_covid19_deaths_US.csv")
+
+urls = str_c(url_in,file_names)
+US_cases = read_csv(urls[1], show_col_types = FALSE)
+US_deaths = read_csv(urls[2], show_col_types = FALSE)
+
+```
+
+## Data Cleaning & Preprocessing
+
+Now that the data is loaded into R, the next step is to explore the data sets to understand their structure and identify any necessary transformations or cleaning.
+
+I noticed the data set contain latitude and longitude columns, which are not relevant to this analysis, so I will remove them. 
+
+
+```{r Cleaning the Data Set}
+## View samples of the data
+
+US_cases
+US_deaths
+
+## Removes Lat and Long columns and reshape the data
+
+US_cases1 = US_cases %>%
+pivot_longer(cols = -(UID:Combined_Key),
+names_to = "date",
+values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+
+US_deaths1 = US_deaths %>%
+pivot_longer(cols = -(UID:Population),
+             names_to = "date",
+             values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+
+
+
+```
+
+
+Now that I have loaded and reshaped the data, the next step is to combine the U.S. cases and deaths data sets into a single data frame for easier analysis.
+
+
+```{r Combine Cases and Deaths} 
+## Combine US cases and deaths
+
+US = US_cases1 %>%
+full_join(US_deaths1)
+
+``` 
+Next, I will create a new data frame that groups the U.S. data by state. Then, I will create another data frame that shows the total cases and deaths for the entire U.S. by date.
+
+ 
+
+```{r Group by State}
+
+## Group the U.S. data frame by state and date, summing cases, deaths, and population
+
+US_by_state = US %>%
+group_by(Province_State, Country_Region, date) %>%
+summarize(cases = sum(cases), deaths = sum(deaths),
+          Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+```
+
+Now, I want to ensure that only valid U.S. states are included in the US_by_state data frame.
+
+
+```{r Group by State Cont.}
+
+## List of valid U.S. States
+
+valid_states = state.name
+
+## This shows a list of Province_States that are not valid US states
+
+US_by_state %>%
+  filter(!Province_State %in% valid_states) %>%
+  distinct(Province_State)
+
+```
+
+
+Since I found some entries with invalid states, I will remove those from the data frame. 
+
+
+```{r Removing Non-Valid States}
+
+
+## Removes non-valid US states
+
+US_by_state = US_by_state %>%
+  filter(Province_State %in% valid_states)
+
+
+```
+
+Now that only valid U.S. states remain, I can create a new data frame summarizing total cases and deaths for the entire U.S. by date.
+
+
+```{r Summaizes cases and deaths for all of the U.S.}
+
+## Aggregate total cases and deaths for the whole U.S. by date
+
+US_totals = US_by_state %>%
+group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Country_Region, date,
+  cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+  
+
+
+
+```
+
+I will now build the **Case Fatality Ratio (CFR)**. CFR represents the proportion of confirmed COVID-19 cases that result in death and is a commonly used metric health care analysis.
+
+The CFR is calculated as:
+    
+      CFR = (deaths / cases) *100
+      
+Before calculating this value, I need to confirm that both the cases and deaths columns are not cumulative over time. 
+
+
+
+```{r Building CFR}
+
+
+## This will return an empty date frame if the deaths column is cumulative
+
+US_by_state %>%
+  arrange(Province_State, date) %>%
+  group_by(Province_State) %>%
+  mutate(death_diff = deaths - lag(deaths)) %>%
+  filter(death_diff < 0)
+
+## This will return an empty data frame if the cases column is cumulative
+
+US_by_state %>%
+  arrange(Province_State, date) %>%
+  group_by(Province_State) %>%
+  mutate(cases_diff = cases - lag(cases)) %>%
+  filter(cases_diff < 0)
+
+```
+
+Next, I will add a month column to the data and compute monthly CFR values for both each individual state and for the U.S. overall for 2020. 
+
+
+
+```{r Building CFR Cont.}
+
+## Add month column to state and national data
+
+US_by_state = US_by_state %>%
+  mutate(month = month(date))
+
+US_totals = US_totals %>%
+  mutate(month = month(date))
+
+## Calculate monthly CFR for each state for 2020
+
+monthly_state_cfr = US_by_state %>%
+  mutate(
+    year = year(date),
+    month = month(date)
+  ) %>%
+  filter(year == 2020) %>%  # Only keeps data from 2020
+  group_by(Province_State, year, month) %>%
+  summarize(
+    monthly_cases = sum(cases, na.rm = TRUE),
+    monthly_deaths = sum(deaths, na.rm = TRUE),
+    CFR = ifelse(monthly_cases > 0, 100 * monthly_deaths / monthly_cases, NA),
+    .groups = 'drop')
+
+
+## Calculate monthly CFR for the entire US for 2020
+
+monthly_national_cfr = US_totals %>%
+  mutate(
+    year = year(date),
+    month = month(date)
+  ) %>%
+  filter(year == 2020) %>% ## Only keeps data from 2020
+  group_by(month, year) %>%
+  summarize(
+    monthly_cases = sum(cases, na.rm = TRUE),
+    monthly_deaths = sum(deaths,na.rm = TRUE),
+    CFR = ifelse(monthly_cases > 0, 100 * monthly_deaths / monthly_cases, NA),
+    .groups = 'drop')
+
+```
+
+
+To analyze the relationship between population density and the Case Fatality Ratio(CFR), I first need to calculate population density for each U.S. state.
+
+Population density is defined as:
+
+      Population Density = Population / Total Area(sq mi)
+
+To do this, I obtained area data for each U.S. state from the U.S. Census Bureau's 2010 state area reference file, available at:
+
+**https://www.census.gov/geographies/reference-files/2010/geo/state-area.html**
+
+
+
+```{r Building Population Density}
+
+## Read the webpage HTML
+
+url = "https://www.census.gov/geographies/reference-files/2010/geo/state-area.html"
+page = read_html(url)
+
+
+## Extract all tables and pick the correct one
+
+tables <- page %>% html_table(fill = TRUE)
+length(tables) 
+state_area_tbl = tables[[1]]  
+
+
+## Removes everything but the total sq miles from the file
+
+state_area_tbl = state_area_tbl %>% select(1:2)
+
+## Removes unnecessary rows
+
+state_area_tbl = state_area_tbl[-c(1, 2, 3), ]
+
+
+## Renames column headings
+
+state_area_tbl = state_area_tbl %>%
+  rename(
+    State = `State and other areas2`,
+    `Total Area (Sq Mi)` = `Total Area`)
+
+## Removes another unnecessary row
+
+state_area_tbl = state_area_tbl %>% filter(State != "" & `Total Area (Sq Mi)` != "")
+
+
+## Converts Total Area column to numeric values
+
+state_area_tbl = state_area_tbl %>%
+  mutate(`Total Area (Sq Mi)` = as.numeric(gsub(",", "", `Total Area (Sq Mi)`)))
+
+
+
+
+```
+
+
+
+Now that I have monthly COVID-19 data and cleaned area data for each U.S. state, the next step is to calculate population density for each state by month in 2020. 
+
+To do this:
+
+  1. I will extract population values for each state from the existing COVID-19 data set.
+  2.  Merge the state area data frame with the monthly state CFR data frame.
+  3.  Calculate population density
+  
+
+
+
+```{r Population Density}
+
+
+## Joins the state area data frame with the monthly_state_cfr
+
+
+monthly_state_cfr = monthly_state_cfr %>%
+  left_join(state_area_tbl, by = c("Province_State" = "State"))
+
+
+## Create a data frame to store monthly population for 2020 for US states
+
+monthly_population = US_by_state %>%
+  filter(year(date) == 2020) %>%           
+  mutate(month = month(date)) %>%
+  group_by(Province_State, month) %>%
+  summarize(
+    Population = max(Population, na.rm = TRUE),  
+    .groups = 'drop')
+
+## Joins the monthly population data with the CFR data for states data frame
+
+monthly_state_cfr = monthly_state_cfr %>%
+  left_join(monthly_population, by = c("Province_State", "month"))
+
+## Adds in Population density to the monthly cfr for the states data frame
+
+monthly_state_cfr = monthly_state_cfr %>%
+  mutate(pop_density = Population / `Total Area (Sq Mi)`)
+
+
+```
+
+
+Finally, I want to add population and total area to the monthly national data frame. 
+
+
+```{r Population Density Cont.}
+
+## This gets the total US area and population from the state level data
+
+national_area_pop = monthly_state_cfr %>%
+  filter(year == 2020) %>%
+  group_by(Province_State) %>%
+  slice(1) %>%  
+  ungroup() %>%
+  summarize(
+    total_population = sum(Population, na.rm = TRUE),
+    total_area = sum(`Total Area (Sq Mi)`, na.rm = TRUE))
+
+
+## Adds the total area and total population to the nation data frame
+## and computes the pop density
+
+monthly_national_cfr = cross_join(monthly_national_cfr, national_area_pop) %>%
+  mutate(pop_density = total_population / total_area)
+
+```
+
+
+
+## Visualizing COVID-19 CFR Trends
+
+
+Now that I have calculated the CFR for each month in 2020, I want to visualize the trends to better understand how the CFR changed over time both nationally and by state.
+
+First, I plot the monthly national CFR for the United States in 2020 to get an overall view of how severe the pandemic was at different points in the year. 
+
+Next, I create a line graph that shows the monthly CFR for each individual state. This allows me to identify patterns in the data and provides insight into how different states may have handled the pandemic differently over time. 
+
+
+
+```{r Graphing the Data}
+
+## This creates a graph for the monthly national cfr
+
+monthly_national_cfr %>%
+  filter(year == 2020) %>%
+  ggplot(aes(x = month, y = CFR)) +
+  geom_line(color = "blue", linewidth = 1.5) +
+  geom_point(size = 3, color = "darkblue") +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  labs(title = "National COVID-19 CFR by Month(2020)",
+       x = "Month",
+       y = "CFR (%)") +
+  theme_minimal()
+
+
+## Creates a series of graphs for each US state
+
+## Note: You may see a warning about rows being removed due to missing or out-of-bounds 
+## values in the CFR plot. This occurs when states reported zero COVID-19 cases in a month, 
+## making the CFR undefined or missing. These are excluded automatically 
+## from the visualization.
+
+ggplot(monthly_state_cfr, aes(x = month, y = CFR)) +
+  geom_line(color = "steelblue", linewidth = 0.8) +
+  geom_point(size = 1, color = "steelblue") +
+  facet_wrap(~ Province_State, scales = "free_y", ncol = 6) +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  labs(
+    title = "Monthly Case Fatality Ratio (CFR) by State(2020)",
+    x = "Month", y = "CFR (%)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    strip.text = element_text(size = 8),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.y = element_text(size = 10),
+    axis.text.y = element_text(size = 6),
+    panel.spacing = unit(0.5, "lines"),
+    legend.position = "none")
+
+
+```
+
+
+From examining the charts, I noticed that the national CFR appears higher in January compared to many individual states. To dig into this, I will focus on the CFR for each state specifically for the month of January.
+
+
+```{r Checking the underlaying data}
+
+
+january_cfr_table = monthly_state_cfr %>%
+  filter(year == 2020, month == 1) %>%
+  select(Province_State, CFR) %>%
+  arrange(CFR)  # Sort by CFR ascending
+
+print(january_cfr_table)
+
+
+
+```
+
+This shows that there is something going on with the CFR calculations. I expect it has something to do with the reported cases and deaths for January 2020. As a next step, I will check the total number of cases and deaths for the state and national data sets. 
+
+
+```{r Checking State and National Data Sets}
+
+# Check total US cases/deaths in January 2020
+
+US_totals %>%
+  filter(year(date) == 2020, month(date) == 1) %>%
+  summarize(total_cases = sum(cases), total_deaths = sum(deaths))
+
+# Check how many states had any cases in January 2020
+
+US_by_state %>%
+  filter(year(date) == 2020, month(date) == 1) %>%
+  group_by(Province_State) %>%
+  summarize(monthly_cases = sum(cases), monthly_deaths = sum(deaths)) %>%
+  filter(monthly_cases > 0)
+
+
+## Sums the cases for US by state
+
+january_cases_total = US_by_state %>%
+  filter(year(date) == 2020, month(date) == 1) %>%
+  summarize(total_cases = sum(cases, na.rm = TRUE))
+
+print(january_cases_total)
+
+
+```
+
+
+From this I can see that the total number of reported cases for the US states is the same as the total number of reported cases for US national data frame. However, the states did not report any deaths, while the national data set did. Next, I am going to look to see if there are any deaths reported for January 2020 at the state level.
+
+```{r Exploring Jan 2020 State Deaths}
+
+## Creates a list of states with total deaths for January 2020
+
+january_deaths_by_state = US_by_state %>%
+  filter(year(date) == 2020, month(date) == 1) %>%
+  group_by(Province_State) %>%
+  summarize(total_deaths = sum(deaths, na.rm = TRUE)) %>%
+  arrange(desc(total_deaths))
+
+# Show the states with the most deaths in January 2020
+
+print(january_deaths_by_state)
+
+```
+
+
+From this I see that Ohio is reporting 10 deaths in January. So, now I am going to check to see how many cases Ohio reported for that month.
+
+
+```{r Checking Cases for Ohio}
+
+## Checks how many cases Ohio reported for January 2020
+
+ohio_january = US_by_state %>%
+  filter(Province_State == "Ohio", year(date) == 2020, month(date) == 1) %>%
+  summarize(
+    total_cases = sum(cases, na.rm = TRUE),
+    total_deaths = sum(deaths, na.rm = TRUE))
+
+print(ohio_january)
+
+```
+
+From this I see that Ohio reported 10 deaths, and no cases of COVID-19 for January 2020. This could be for a variety of reasons. 
+
+  1. Data Inconsistencies - Deaths could have been reported based on clinical diagnosis or other causes before confirmed COVID-19 testing data was available or recorded properly as cases.
+  2.  Data Entry or Coding Errors - There could be errors in the data set were deaths were logged but corresponding cases were not.
+  3. Deaths from Other Causes Misclassified - Some deaths may have been attributed to COVID-19 retrospectively or coded as COVID-19 deaths based on symptoms without confirmed cases recorded at the time.
+  
+## State vs. National CFR Comparison
+
+Next, I want to explore how each state performed relative to the National CFR. To do this, I will create a new data frame that merges the monthly state level CFR data with the corresponding monthly national data calculate the difference.
+
+
+```{r State CFR vs. National CFR}
+
+## Creates a new data frame with the difference between the state CFR and national CFR
+
+state_vs_national = monthly_state_cfr %>%
+  left_join(monthly_national_cfr %>% select(year, month, CFR) %>% rename(national_CFR = CFR),
+            by = c("year", "month")) %>%
+  mutate( CFR_diff = CFR - national_CFR)
+
+## Creates a data frame that shows states that outperformed the national CFR
+
+states_outperforming_by_month = state_vs_national %>%
+  filter(!is.na(CFR_diff)) %>%
+  filter(CFR_diff < 0) %>%    # States that outperformed (CFR < national CFR)
+  arrange(year, month, CFR_diff) %>%
+  select(Province_State, year, month, CFR_diff)
+
+print(states_outperforming_by_month)
+
+## Creates a data frame that shows states that under performed the national CFR
+
+states_underperforming_by_month = state_vs_national %>%
+  filter(!is.na(CFR_diff)) %>%
+  filter(CFR_diff > 0) %>%    # States that under performed (CFR > national CFR)
+  arrange(year, month, desc(CFR_diff)) %>%
+  select(Province_State, year, month, CFR_diff)
+
+print(states_underperforming_by_month)
+
+
+
+
+```
+  
+  Next I am going to see if any state out performed the national CFR for every month of 2020.
+  
+  
+```{r Over Performing States}
+  
+## Pulls a list of states that out performed the national CFR every month for 2020
+
+states_always_outperform = state_vs_national %>%
+  filter(year == 2020, !is.na(CFR_diff)) %>%
+  group_by(Province_State) %>%
+  summarize(all_outperform = all(CFR_diff <= 0)) %>%
+  filter(all_outperform == TRUE) %>%
+  pull(Province_State)
+
+states_always_outperform
+
+  
+```
+
+Now I am going to do the same thing expect I am going to be looking at states that under performed for 2020.
+
+```{r Under Performing States}
+
+## Creates a list of states that always under performed
+
+states_always_underperform = state_vs_national %>%
+  filter(year == 2020, !is.na(CFR_diff)) %>%
+  group_by(Province_State) %>%
+  summarize(all_underperform = all(CFR_diff > 0)) %>%
+  filter(all_underperform == TRUE) %>%
+  pull(Province_State)
+
+states_always_underperform
+
+```
+
+Only two states under performed the national CFR consistently throughout the entire year, while 24 states consistently outperformed it. I now want to examine the population density of these states to see whether it may be influencing their performance. 
+
+
+```{r Pop Density against National and State Performance}
+
+# Average pop_density for always outperforming states
+
+pop_density_outperform = monthly_state_cfr %>%
+  filter(Province_State %in% states_always_outperform, year == 2020) %>%
+  group_by(Province_State) %>%
+  summarize(avg_pop_density = mean(pop_density, na.rm = TRUE))
+
+# Average pop_density for always under performing states
+
+pop_density_underperform = monthly_state_cfr %>%
+  filter(Province_State %in% states_always_underperform, year == 2020) %>%
+  group_by(Province_State) %>%
+  summarize(avg_pop_density = mean(pop_density, na.rm = TRUE))
+
+
+## Creates a new data frame for comparison
+
+pop_density_comparison = bind_rows(
+  pop_density_outperform %>% mutate(group = "Always Outperformed"),
+  pop_density_underperform %>% mutate(group = "Always Underperformed"))
+
+## Creates a box plot
+
+ggplot(pop_density_comparison, aes(x = group, y = avg_pop_density, fill = group)) +
+  geom_boxplot() +
+  labs(title = "Population Density: Outperforming vs. Underperforming States",
+       x = "Group",
+       y = "Average Population Density (people per sq mile)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+```
+
+
+Based on this analysis, it appears that the states that under performed had significantly higher population densities compared to those that outperformed. However, since only two states under performed for all 12 months, and with one of them being New York, which has a notably high population density, this limited sample size is not sufficient to draw a definitive conclusion. Therefore, I do not have enough evidence to state that population density is affecting the CFR. 
+
+
+## Modeling CFR with Population Density
+
+Next, I want to build a regression model to examine the relationship between CFR and population density. Since I want to see this relationship from 2020 to 2023, I will need to add in population density to the all_monthly_state_cfr and all_monthly_national_cfr data frame. 
+
+
+```{r Preping the Data}
+
+## Creates a data frame containing State for 2020-2023
+
+all_monthly_state_cfr = US_by_state %>%
+  mutate(
+    year = year(date),
+    month = month(date)
+  ) %>%
+  group_by(Province_State, year, month) %>%
+  summarize(
+    monthly_cases = sum(cases, na.rm = TRUE),
+    monthly_deaths = sum(deaths, na.rm = TRUE),
+    CFR = ifelse(monthly_cases > 0, 100 * monthly_deaths / monthly_cases, NA),
+    .groups = 'drop')
+
+
+## Joins the state area data frame with the all_monthly_state_cfr
+
+
+all_monthly_state_cfr = all_monthly_state_cfr %>%
+  left_join(state_area_tbl, by = c("Province_State" = "State"))
+
+## Adds a year column to US_by_state
+
+US_by_state = US_by_state %>%
+  mutate(year = year(date))
+
+## Create a data frame to store monthly population US States
+
+monthly_population_2020_2023 = US_by_state %>%
+  mutate(month = month(date)) %>%
+  group_by(Province_State, month, year) %>%
+  summarize(
+    Population = max(Population, na.rm = TRUE),  
+    .groups = 'drop')
+
+
+## Joins the monthly population data frame with the all_monthly_state_cfr
+
+all_monthly_state_cfr = all_monthly_state_cfr %>%
+  left_join(monthly_population_2020_2023, by = c("Province_State", "month", "year"))
+
+## Adds in Population density to the all_monthly_state_cfr
+
+all_monthly_state_cfr = all_monthly_state_cfr %>%
+  mutate(pop_density = Population / `Total Area (Sq Mi)`)
+
+## This gets the total US area and population from the state level data for all years
+
+all_national_area_pop = monthly_state_cfr %>%
+  group_by(year) %>%
+  ungroup() %>%
+  summarize(
+    total_population = sum(Population, na.rm = TRUE),
+    total_area = sum(`Total Area (Sq Mi)`, na.rm = TRUE))
+
+
+## Adds the total area and total population to the nation data frame
+
+total_population = all_national_area_pop$total_population
+total_area = all_national_area_pop$total_area
+
+## Adds the CFR to a new data frame that contains US total data from 2020-2023
+
+all_monthly_national_cfr = US_totals %>%
+  mutate(
+    year = year(date),
+    month = month(date)
+  ) %>%
+  group_by(month, year) %>%
+  summarize(
+    monthly_cases = sum(cases, na.rm = TRUE),
+    monthly_deaths = sum(deaths,na.rm = TRUE),
+    CFR = ifelse(monthly_cases > 0, 100 * monthly_deaths / monthly_cases, NA),
+    .groups = 'drop')
+
+
+
+## Computes Population density for the entire US
+
+all_monthly_national_cfr = all_monthly_national_cfr %>%
+  mutate(
+    total_population = total_population,
+    total_area = total_area,
+    pop_density = total_population / total_area)
+
+
+
+
+```
+
+
+I am now ready to build the linear regression model of CFR vs population density.
+
+
+```{r Building the Model}
+
+## Makes sure year and month are treated as factors by R
+
+all_monthly_state_cfr = all_monthly_state_cfr %>%
+  mutate(
+    year = as.factor(year),
+    month = as.factor(month))
+
+
+## Builds state level regression model
+
+cfr_model = lm(CFR ~ pop_density + year + month, data = all_monthly_state_cfr)
+
+summary(cfr_model)
+
+```
+
+
+## Interpretation of Results
+
+At the start of this analysis, I wanted to see if a higher population density corresponded with an increased CFR. The regression results show that for each additional person per square mile, the CFR increases by approximately 0.00177%, and the associated Pr(>|t|) is very small. This indicates strong statistical evidence that population density is positively associated with CFR.
+
+However, statistical significance does not always imply practical significance. An example, if a state's population density increases by 100 people per square mile, the model predicts an increase in CFR of 0.177%. From the data, the average monthly CFR values are often between 1% and 5%, a 0.177% increase may be noticeable, but it is not dramatic. This suggests that while population density is correlated with CFR, it may not be the dominant driver of fatality outcomes on its own. Other unmeasured factors, such as healthcare infrastructure, age distribution, or vaccination rates are likely more influential.  
+
+The model also indicates that CFR decreased significantly after 2020, with reductions of approximately 1.25% in 2021, 1.71% in 2022, and 1.6% in 2023. This is likely due to the roll out of the vaccine, and improved treatment protocols.
+
+In conclusion, the model confirms a statistically significant link between population density and CFR, but the practical effect is relatively small. 
+
+
+## Conclusion & Future Directions
+
+The regression analysis provides strong evidence that population density is positively associated with the COVID-19 CFR in the U.S. However, the effect size per unit increase in density is small and it is likely that many other factors contribute to the variation in CFR. 
+
+The significant drop in CFR after 2020 highlights the impact of medical and public health interventions. Future work could extend this model by including additional predictors such as vaccination rates, healthcare capacity, socioeconomic factors, or age demographics to better understand the drivers of CFR differences. 
+
+
+
+```{r session info}
+
+## sessionInfo
+
+sessionInfo()
+
+```
