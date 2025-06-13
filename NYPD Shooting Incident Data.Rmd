@@ -1,0 +1,277 @@
+---
+title: "NYPD Shooting Incident Analysis"
+author: "Will Hubbs"
+date: "2025-05-19"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+## Required Packages
+## This analysis requires the following R packages: tidyverse, lubridate, forecast.
+## Please Install them before running the code using
+
+library(tidyverse)
+library(forecast)
+library(lubridate) 
+
+```
+
+## Project Overview
+
+This project analyzes the Historic NYPD Shooting data to develop a model that forecasts the number of shooting incidents expected in 2025. 
+
+
+To generate this forecast, I will follow several steps. 
+
+  1.  **Data Preparation** - Load and clean the data set to prep it for analysis
+  2.  **Visualization** - Create  graphs to identify trends and to help select the model
+  3.  **Modeling** - Build a model to predict the number of incidents in 2025
+  4.  **Interpretation** - Analyze the results and draw conclusions from the model
+
+## Data Source
+
+The data used in this project comes from the NYPD Shooting INcident Data (Historic) data set, that is available through NYC Open Data. This data set provides records of shooting incidents reported by the NYPD. 
+Each record includes information such as location of the shooting, the date and time that the shooting occurred, if the shooting resulted in a murder, and demographic data around both the perpetrator and the victim, age group, race, sex. 
+
+## Assumptions
+
+- Each unique INCIDENT_KEY corresponds to one shooting event 
+- The NYPD's historic data is accurate
+- The definition of what constitutes a "shooting incident" has remained consistent across all years of the data set
+- The social and political conditions influencing shootings in 2025 will be similar to past years
+
+
+
+## Biases
+
+- Not all shooting incidents may be reported or recorded by the NYPD
+- Non-fatal shootings or shootings in certain neighborhoods may be under reported due to a lack of trust   in law enforcement
+- Policing and reporting practices may be different between boroughs or precincts
+- Certain areas may be more heavily policed leading to more recorded incidents
+- There may be changes in reporting standards or technology over time
+- Some shootings may have been misclassified or left out due to human error in data entry
+
+
+## Loading the Data Set
+
+The first step is to load in the data from <https://catalog.data.gov>. To locate the data set, search for **NYPD Shooting Incident Data (Historic)** Once found, copy the csv download url into RStudio and then load the data in a variable. 
+
+```{r load data}
+
+## Loading in the Data set
+url_in = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shooting_data = read_csv(url_in)
+
+##Summary of the starting data set
+
+summary(shooting_data)
+```
+
+## Data Clean Up
+
+Before analyzing the data set, we need to clean the raw data file. Based on the initial summary, several columns are not relevant for the analysis that I will be doing, specifically, the geographic coordinate columns. To begin with I will remove these columns.  
+
+Next, I examine the remaining columns for missing values to determine if they contain enough data. A significant number of entries are missing values in LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, and LOCATION_DESC. So, I am going to remove those columns as well.
+
+
+Then I am going to check Incident_KEY for duplicate values. From this, I see that there are duplicate incident keys in this file. Referencing the following web address
+
+<https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8/about_data>
+
+I found that each incident key represents one shooting event, but each row represents one victim. For this project, I am going to make the assumption that each unique INCIDENT_KEY corresponds to a single shooting event. 
+
+Finally, I standardize the OCCUR_DATE column, and the OCCUR_TIME column to ensure they are ready for analysis.
+
+
+
+```{r data clean up}
+
+
+## Removes the lat, long and x and y coordinates from the file
+
+shooting_data_without_coors = shooting_data[ -c(17,18,19,20,21)]
+
+## This gives us the total number of incidents in the file
+nrow(shooting_data)
+
+
+## This gives us the number of incidents with a NA for each column
+
+nrow(filter(shooting_data_without_coors, is.na(INCIDENT_KEY)))
+nrow(filter(shooting_data_without_coors, is.na(OCCUR_DATE)))
+nrow(filter(shooting_data_without_coors, is.na(OCCUR_TIME)))
+nrow(filter(shooting_data_without_coors, is.na(BORO)))
+nrow(filter(shooting_data_without_coors, is.na(LOC_OF_OCCUR_DESC)))
+nrow(filter(shooting_data_without_coors, is.na(PRECINCT)))
+nrow(filter(shooting_data_without_coors, is.na(JURISDICTION_CODE)))
+nrow(filter(shooting_data_without_coors, is.na(LOC_CLASSFCTN_DESC)))
+nrow(filter(shooting_data_without_coors, is.na(LOCATION_DESC)))
+nrow(filter(shooting_data_without_coors, is.na(STATISTICAL_MURDER_FLAG)))
+nrow(filter(shooting_data_without_coors, is.na(PERP_AGE_GROUP)))
+nrow(filter(shooting_data_without_coors, is.na(PERP_SEX)))
+nrow(filter(shooting_data_without_coors, is.na(PERP_RACE)))
+nrow(filter(shooting_data_without_coors, is.na(VIC_AGE_GROUP)))
+nrow(filter(shooting_data_without_coors, is.na(VIC_SEX)))
+nrow(filter(shooting_data_without_coors, is.na(VIC_RACE)))
+
+
+## This removes LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, and LOCATION_DESC
+shooting_data_updated = shooting_data_without_coors[ -c(5, 8, 9)]
+
+## Check for duplicates 
+
+any(duplicated(shooting_data_updated$INCIDENT_KEY))
+
+
+## Formats the OCCUR_Date column
+
+shooting_data_updated <- shooting_data_updated %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+
+
+## Formats the OCCUR_TIME column
+shooting_data_updated2 <- shooting_data_updated %>%
+  mutate(OCCUR_TIME_str = sprintf("%02d:%02d:%02d", hour(OCCUR_TIME), minute(OCCUR_TIME), second(OCCUR_TIME)))
+
+```
+
+## Visualizations
+
+The main goal of this project is to predict the number of shooting incidents that will occur in 2025. Before I can choose a model I want to explore and visualize the data to inform my model selection. 
+
+
+First, I graph the number of unique incidents per day for the data set. This will help me see an overall trend. After that, I graph the data by year to see if the data is has a linear trend line. 
+
+The yearly graph shows that from 2006 to 2012, the number of incidents were staying relatively stable. Then, a downward trend occurs until 2020, which has a spike in the incidents per year. This continues until 2022 when it begins to decline again. 
+
+Based on these observations, a time series model may be appropriate for forecasting future incidents. I used the auto.arima() function from the forecast package because it automatically identifies the best-fitting ARIMA model for a given time series. It is also convenient because it saves time compared to manually trying different ARIMA combinations. 
+
+
+
+
+
+```{r Visualization}
+
+## Remove duplicates based on INCIDENT_KEY
+
+shooting_data_unique = shooting_data_updated %>%
+distinct(INCIDENT_KEY, .keep_all = TRUE)
+
+## Makes a New df and counts the number of incidents per day
+
+incidents_per_day = shooting_data_unique %>%
+  group_by(OCCUR_DATE) %>%
+  summarise(num_incidents = n_distinct(INCIDENT_KEY))
+
+## Creates a Graph of the Number of Incidents per Day
+
+ggplot(incidents_per_day, aes(x = OCCUR_DATE, y = num_incidents)) +
+  geom_line(color = "steelblue") +        
+  geom_point(color = "darkred") +         
+  labs(title = "Number of Incidents per Day",
+  x = "Date",    
+  y = "Number of Incidents") +    
+  theme_minimal()     
+       
+## Creates a year column and counts the number of incidents per year
+
+incidents_per_year <- shooting_data_unique %>%
+  mutate(YEAR = year(OCCUR_DATE)) %>%
+  group_by(YEAR) %>%
+  summarise(num_incidents = n_distinct(INCIDENT_KEY))
+
+
+## Creates a graph of the number of Incidents per Year
+
+ggplot(incidents_per_year, aes(x = as.factor(YEAR), y = num_incidents)) +
+  geom_col(fill = "darkorange") +
+  labs(title = "Number of Incidents per Year",
+       x = "Year",
+       y = "Total Incidents") +
+  theme_minimal()
+
+
+## Creates a time series forecast and plots the model
+
+ts_data <- ts(incidents_per_year$num_incidents, start = min(incidents_per_year$YEAR))
+model = auto.arima(ts_data)
+forecast_2025 <- forecast(model, h = 1)
+plot(forecast_2025) 
+
+
+```
+
+
+## Interpretations of Forecast Results
+
+
+After building the model, I examined its confidence intervals to see how they compared to recent years. 
+
+The model predicts a mean of approximately 1,008 for 2025, with the following confidence intervals:
+
+- **80%** Confidence Interval: (722.30, 1294.48)
+- **95%** Confidence Interval: (570.85, 1445.92)
+
+
+For context, the total number of incidents in
+
+- 2023 was **974** 
+- 2024 it was **904**. 
+
+
+To interpret these results, I calculated the proportion of the **80%** confidence interval that lies below the 2024 total. Approximately **31.8%** of the interval falls below the **904**. This indicates that, based on this model, it is more likely that 2025 will experience more incidents than 2024. 
+
+
+
+
+```{r analysing the data}
+
+
+## Prints the total number of shooting incidents per year
+
+incidents_per_year
+
+
+## Pull out the Confidence Intervals
+
+print(forecast_2025)
+
+## Finds the mean of forecast
+
+forecast_2025$mean
+
+
+## Find the % of the confidence interval that is below the 2024 value
+
+diff_2024_forecast = 904-722
+range_forecast = 1294-722
+prob_below_2024 = (diff_2024_forecast/range_forecast) *100
+
+
+
+```
+
+
+## Conclusion
+
+In this project, I developed a model to forecast the number of shooting incidents expected in 2025 using historic NYPD data from 2006 to 2024. 
+
+While the model provides a reasonable estimate, it is important to note that it relies solely on one data set. To improve the model's accuracy, additional contextual data could be used. For example:
+
+- Economic indicators over time
+- Unemployment rates
+- Additional Crime statistics, beyond just the shootings
+
+
+Adding in these data sets could help capture additional factors that influence trends in gun violence. In the end, based on the current data set, this project demonstrates a data driven approach to forecasting and provides a foundation for further analysis.
+
+
+
+```{r session info}
+sessionInfo()
+
+```
